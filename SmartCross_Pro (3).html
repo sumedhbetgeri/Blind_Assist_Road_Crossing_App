@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartCross — AI Road Crossing Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Barlow:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<style>
+:root {
+  --bg: #080c10;
+  --surface: #0d1117;
+  --card: #111820;
+  --border: #1e2a38;
+  --border2: #243040;
+  --text: #c9d1d9;
+  --muted: #586069;
+  --safe: #3fb950;
+  --safe-bg: rgba(63,185,80,0.08);
+  --warn: #d29922;
+  --warn-bg: rgba(210,153,34,0.08);
+  --danger: #f85149;
+  --danger-bg: rgba(248,81,73,0.1);
+  --blue: #388bfd;
+  --blue-bg: rgba(56,139,253,0.1);
+  --accent: #58a6ff;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Barlow', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── NOISE OVERLAY ── */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events: none; z-index: 0; opacity: 0.4;
+}
+
+/* ── TOPBAR ── */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 28px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(8,12,16,0.9);
+  backdrop-filter: blur(20px);
+  position: sticky; top: 0; z-index: 100;
+}
+.logo {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 1.1rem; font-weight: 800; letter-spacing: -0.02em;
+}
+.logo-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--safe); animation: breathe 2s infinite; }
+@keyframes breathe { 0%,100%{opacity:1} 50%{opacity:0.3} }
+.topbar-status {
+  display: flex; align-items: center; gap: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.72rem; color: var(--muted);
+}
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.status-dot.active { background: var(--safe); animation: breathe 1.5s infinite; }
+.version-badge {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.65rem; color: var(--muted);
+  border: 1px solid var(--border2); border-radius: 4px;
+  padding: 3px 8px;
+}
+
+/* ── LAYOUT ── */
+.app { display: grid; grid-template-columns: 1fr 340px; height: calc(100vh - 53px); }
+
+/* ── LEFT PANEL ── */
+.left-panel { display: flex; flex-direction: column; border-right: 1px solid var(--border); }
+
+/* STATUS BANNER */
+.status-banner {
+  padding: 18px 24px;
+  display: flex; align-items: center; gap: 16px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.4s, border-color 0.4s;
+  background: var(--surface);
+  position: relative; overflow: hidden;
+}
+.status-banner::after {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+  background: var(--safe); transition: background 0.4s;
+}
+.status-banner.warn::after { background: var(--warn); }
+.status-banner.danger::after { background: var(--danger); }
+.status-banner.safe { background: var(--safe-bg); border-color: rgba(63,185,80,0.2); }
+.status-banner.warn { background: var(--warn-bg); border-color: rgba(210,153,34,0.2); }
+.status-banner.danger {
+  background: var(--danger-bg); border-color: rgba(248,81,73,0.25);
+  animation: dangerPulse 1s infinite;
+}
+@keyframes dangerPulse { 0%,100%{background:var(--danger-bg)} 50%{background:rgba(248,81,73,0.18)} }
+
+.banner-icon { font-size: 2rem; line-height: 1; }
+.banner-text { flex: 1; }
+.banner-title {
+  font-size: 1.1rem; font-weight: 800; letter-spacing: 0.04em;
+  text-transform: uppercase; line-height: 1;
+}
+.banner-sub { font-size: 0.78rem; color: var(--muted); margin-top: 4px; font-family: 'IBM Plex Mono', monospace; }
+.banner-state-safe .banner-title { color: var(--safe); }
+.banner-state-warn .banner-title { color: var(--warn); }
+.banner-state-danger .banner-title { color: var(--danger); }
+
+/* VIDEO AREA */
+.video-wrap {
+  flex: 1; position: relative; background: #000; overflow: hidden;
+  min-height: 0;
+}
+#video { width: 100%; height: 100%; object-fit: cover; display: block; }
+#overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.video-placeholder {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem;
+}
+.video-placeholder .cam-icon { font-size: 3rem; opacity: 0.3; }
+.scan-line {
+  position: absolute; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0; top: 0;
+  animation: scan 3s linear infinite;
+}
+@keyframes scan { 0%{top:0;opacity:0} 5%{opacity:0.6} 95%{opacity:0.6} 100%{top:100%;opacity:0} }
+
+/* STATS ROW */
+.stats-row {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.stat-cell {
+  padding: 12px 16px; border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 3px;
+}
+.stat-cell:last-child { border-right: none; }
+.stat-label { font-family: 'IBM Plex Mono', monospace; font-size: 0.62rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.stat-value { font-size: 1.4rem; font-weight: 700; color: var(--text); font-family: 'IBM Plex Mono', monospace; }
+.stat-unit { font-size: 0.65rem; color: var(--muted); margin-left: 2px; }
+
+/* ── RIGHT PANEL ── */
+.right-panel {
+  display: flex; flex-direction: column;
+  background: var(--surface); overflow-y: auto;
+}
+
+/* SECTION TITLE */
+.section-title {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--muted); padding: 16px 20px 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 6px;
+}
+.section-title::before { content: '//'; color: var(--border2); }
+
+/* CONTROLS */
+.controls { padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+.btn {
+  width: 100%; padding: 13px 20px;
+  border: 1px solid; border-radius: 6px;
+  font-family: 'Barlow', sans-serif; font-size: 0.9rem; font-weight: 700;
+  cursor: pointer; transition: all 0.2s; letter-spacing: 0.03em;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn-start {
+  background: rgba(63,185,80,0.12); border-color: rgba(63,185,80,0.4); color: var(--safe);
+}
+.btn-start:hover { background: rgba(63,185,80,0.2); transform: translateY(-1px); box-shadow: 0 4px 20px rgba(63,185,80,0.15); }
+.btn-stop {
+  background: rgba(248,81,73,0.1); border-color: rgba(248,81,73,0.3); color: var(--danger);
+}
+.btn-stop:hover { background: rgba(248,81,73,0.18); }
+.btn-checkin {
+  background: rgba(56,139,253,0.1); border-color: rgba(56,139,253,0.3); color: var(--blue);
+}
+.btn-checkin:hover { background: rgba(56,139,253,0.18); }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none !important; }
+.hidden { display: none !important; }
+
+/* DETECTION CARDS */
+.detections-area { padding: 12px 16px; flex: 0 0 auto; min-height: 120px; }
+.det-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; margin-bottom: 8px;
+  animation: slideUp 0.25s ease;
+}
+@keyframes slideUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+.det-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.det-type { font-weight: 700; font-size: 0.9rem; display: flex; align-items: center; gap: 6px; }
+.det-badge {
+  font-family: 'IBM Plex Mono', monospace; font-size: 0.65rem;
+  padding: 2px 7px; border-radius: 3px;
+  background: var(--border2); color: var(--muted);
+}
+.det-badge.fast { background: rgba(248,81,73,0.15); color: var(--danger); }
+.det-badge.medium { background: rgba(210,153,34,0.15); color: var(--warn); }
+.det-row {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 4px; font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem;
+}
+.det-row span { color: var(--muted); }
+.det-row strong { color: var(--text); }
+.no-det { text-align: center; color: var(--muted); font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem; padding: 20px 0; }
+
+/* EMERGENCY */
+.emergency-section { padding: 16px; border-top: 1px solid var(--border); }
+.input-group { margin-bottom: 10px; }
+.input-label { font-family: 'IBM Plex Mono', monospace; font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; display: block; margin-bottom: 5px; }
+.input-field {
+  width: 100%; padding: 10px 12px;
+  background: var(--card); border: 1px solid var(--border2); border-radius: 6px;
+  color: var(--text); font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem;
+  outline: none; transition: border-color 0.2s;
+}
+.input-field:focus { border-color: var(--accent); }
+.input-field::placeholder { color: var(--muted); }
+.btn-emergency {
+  background: rgba(248,81,73,0.1); border-color: rgba(248,81,73,0.35); color: var(--danger);
+}
+.btn-emergency:hover { background: rgba(248,81,73,0.2); }
+.emergency-status {
+  margin-top: 8px; padding: 10px 12px; border-radius: 6px;
+  font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem;
+  display: none;
+}
+.emergency-status.sent {
+  display: block;
+  background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.3); color: var(--safe);
+}
+.emergency-status.error {
+  display: block;
+  background: rgba(248,81,73,0.1); border: 1px solid rgba(248,81,73,0.3); color: var(--danger);
+}
+
+/* EVENT LOG */
+.log-area { border-top: 1px solid var(--border); flex: 1; }
+.log-scroll { max-height: 220px; overflow-y: auto; padding: 8px 16px 16px; }
+.log-scroll::-webkit-scrollbar { width: 4px; }
+.log-scroll::-webkit-scrollbar-track { background: transparent; }
+.log-scroll::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+.log-entry {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  padding: 6px 0; border-bottom: 1px solid rgba(30,42,56,0.5);
+  font-family: 'IBM Plex Mono', monospace; font-size: 0.7rem; gap: 8px;
+  animation: slideUp 0.2s ease;
+}
+.log-entry:last-child { border-bottom: none; }
+.log-msg { flex: 1; line-height: 1.4; }
+.log-time { color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+.log-entry.success .log-msg { color: var(--safe); }
+.log-entry.warning .log-msg { color: var(--warn); }
+.log-entry.error .log-msg { color: var(--danger); }
+.log-entry.info .log-msg { color: var(--muted); }
+
+/* MOBILE */
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; height: auto; }
+  .left-panel { border-right: none; border-bottom: 1px solid var(--border); }
+  .video-wrap { height: 50vw; min-height: 220px; }
+  .right-panel { max-height: none; }
+  .stats-row { grid-template-columns: repeat(2,1fr); }
+}
+</style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="logo">
+    <div class="logo-dot" id="logoDot"></div>
+    SmartCross
+  </div>
+  <div class="topbar-status">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusLabel">OFFLINE</span>
+  </div>
+  <div class="version-badge">v2.0 · COCO-SSD</div>
+</div>
+
+<!-- APP GRID -->
+<div class="app">
+
+  <!-- LEFT: CAMERA + STATUS -->
+  <div class="left-panel">
+
+    <!-- STATUS BANNER -->
+    <div class="status-banner safe banner-state-safe" id="statusBanner">
+      <div class="banner-icon" id="bannerIcon">✓</div>
+      <div class="banner-text">
+        <div class="banner-title" id="bannerTitle">SYSTEM IDLE</div>
+        <div class="banner-sub" id="bannerSub">Start the assistant to begin monitoring</div>
+      </div>
+    </div>
+
+    <!-- VIDEO -->
+    <div class="video-wrap">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div class="scan-line" id="scanLine" style="display:none"></div>
+      <div class="video-placeholder" id="videoPlaceholder">
+        <div class="cam-icon">📷</div>
+        <div>Camera feed appears here</div>
+        <div style="opacity:0.5; font-size:0.7rem;">Click Start Assistant →</div>
+      </div>
+    </div>
+
+    <!-- STATS ROW -->
+    <div class="stats-row">
+      <div class="stat-cell">
+        <div class="stat-label">FPS</div>
+        <div class="stat-value" id="statFps">—</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-label">Vehicles</div>
+        <div class="stat-value" id="statVehicles">0</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-label">Closest</div>
+        <div class="stat-value" id="statClosest">—<span class="stat-unit">m</span></div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-label">Max Speed</div>
+        <div class="stat-value" id="statSpeed">—<span class="stat-unit">km/h</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="right-panel">
+
+    <!-- CONTROLS -->
+    <div class="section-title">Controls</div>
+    <div class="controls">
+      <button class="btn btn-start" id="startBtn" onclick="startSystem()">▶ Start Assistant</button>
+      <button class="btn btn-checkin hidden" id="checkinBtn" onclick="doCheckin()">✓ I'm Safe — Check In</button>
+      <button class="btn btn-stop hidden" id="stopBtn" onclick="stopSystem()">⏹ Stop Assistant</button>
+    </div>
+
+    <!-- DETECTIONS -->
+    <div class="section-title">Live Detections</div>
+    <div class="detections-area" id="detectionsArea">
+      <div class="no-det">No vehicles detected</div>
+    </div>
+
+    <!-- EMERGENCY -->
+    <div class="section-title">Emergency Alert</div>
+    <div class="emergency-section">
+      <div class="input-group">
+        <label class="input-label">Phone Number (WhatsApp / SMS)</label>
+        <input class="input-field" id="emergencyPhone" type="tel" placeholder="+91 9876543210">
+      </div>
+      <div class="input-group">
+        <label class="input-label">Email Address</label>
+        <input class="input-field" id="emergencyEmail" type="email" placeholder="contact@example.com">
+      </div>
+      <div class="input-group">
+        <label class="input-label">Your Name / ID</label>
+        <input class="input-field" id="emergencyName" type="text" placeholder="e.g. John Doe">
+      </div>
+      <button class="btn btn-emergency" onclick="sendEmergencyAlert()">🚨 Send Emergency Alert</button>
+      <div class="emergency-status" id="emergencyStatus"></div>
+    </div>
+
+    <!-- LOG -->
+    <div class="log-area">
+      <div class="section-title">Event Log</div>
+      <div class="log-scroll" id="logScroll">
+        <div class="log-entry info">
+          <span class="log-msg">System ready. Awaiting start command.</span>
+          <span class="log-time" id="initTime"></span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ================================================================
+// SmartCross AI — Clean Rewrite
+// All functions defined before use. Single source of truth logic.
+// ================================================================
+
+// ── CONSTANTS ────────────────────────────────────────────────────
+const VEHICLE_CLASSES   = ['car','truck','bus','motorcycle','bicycle'];
+const EMOJI             = {car:'🚗',truck:'🚛',bus:'🚌',motorcycle:'🏍️',bicycle:'🚲'};
+const FOCAL             = 700;
+const REF_W             = {car:1.8,truck:2.4,bus:2.5,motorcycle:0.8,bicycle:0.6};
+const DETECT_MS         = 350;    // run detection every 350ms
+const SAFE_CLEAR_MS     = 5000;   // road must be clear 5s before "safe"
+const RPT_CAUTION_MS    = 4000;   // repeat caution every 4s while vehicle present
+const RPT_SAFE_MS       = 8000;   // repeat "still clear" every 8s
+const RPT_DANGER_MS     = 2000;   // repeat danger every 2s
+const STATE             = {IDLE:'idle',VEHICLE:'vehicle',CLEARING:'clearing',SAFE:'safe',DANGER:'danger'};
+
+// ── STATE ─────────────────────────────────────────────────────────
+let model       = null;
+let isActive    = false;
+let stream      = null;
+let animFrame   = null;
+let lastDetectT = 0;
+let prevFrameT  = 0;
+let fps         = 0;
+let trackedVehs = new Map();
+let vehicleId   = 0;
+let appState    = STATE.IDLE;
+let clearedAt   = null;   // when road first became clear
+let lastSpeakT  = 0;      // last time we said anything
+let ttsPlaying  = false;
+
+// ── HELPERS ───────────────────────────────────────────────────────
+function nowTime() {
+  return new Date().toLocaleTimeString();
+}
+
+function estDist(cls, bwPx) {
+  const ref = REF_W[cls] || 1.8;
+  return Math.max(2, Math.round((ref * FOCAL) / (bwPx || 1)));
+}
+
+function log(msg, type) {
+  type = type || 'info';
+  const scroll = document.getElementById('logScroll');
+  const entry  = document.createElement('div');
+  entry.className = 'log-entry ' + type;
+  entry.innerHTML = '<span class="log-msg">' + msg + '</span><span class="log-time">' + nowTime() + '</span>';
+  scroll.insertBefore(entry, scroll.firstChild);
+  while (scroll.children.length > 40) scroll.removeChild(scroll.lastChild);
+}
+
+function setBanner(type, icon, title, sub) {
+  // type: 'safe' | 'warn' | 'danger' | 'idle'
+  const b   = document.getElementById('statusBanner');
+  const cls = (type === 'danger') ? 'danger' : (type === 'warn') ? 'warn' : 'safe';
+  const st  = (type === 'idle')   ? 'safe'   : type;
+  b.className = 'status-banner ' + cls + ' banner-state-' + st;
+  document.getElementById('bannerIcon').textContent  = icon;
+  document.getElementById('bannerTitle').textContent = title;
+  document.getElementById('bannerSub').textContent   = sub;
+}
+
+function setDot(on) {
+  document.getElementById('statusDot').className = 'status-dot' + (on ? ' active' : '');
+  document.getElementById('statusLabel').textContent = on ? 'ACTIVE' : 'OFFLINE';
+}
+
+function showEl(id)  { var el = document.getElementById(id); if(el) el.classList.remove('hidden'); }
+function hideEl(id)  { var el = document.getElementById(id); if(el) el.classList.add('hidden'); }
+
+function updateStats(count, closest, maxSpd) {
+  document.getElementById('statVehicles').textContent = count;
+  document.getElementById('statClosest').innerHTML    = (closest != null) ? closest + '<span class="stat-unit">m</span>' : '—';
+  document.getElementById('statSpeed').innerHTML      = maxSpd ? Math.round(maxSpd) + '<span class="stat-unit">km/h</span>' : '—';
+}
+
+function renderCards(vehs) {
+  const area = document.getElementById('detectionsArea');
+  if (!vehs.length) {
+    area.innerHTML = '<div class="no-det">No vehicles detected</div>';
+    return;
+  }
+  area.innerHTML = vehs.map(function(v) {
+    var spd   = Math.round(v.speed);
+    var dist  = estDist(v.class, v.bbox[2]);
+    var badge = spd > 60 ? 'fast' : spd > 35 ? 'medium' : '';
+    var lbl   = spd > 60 ? 'FAST' : spd > 35 ? 'MED' : 'SLOW';
+    return '<div class="det-card">' +
+      '<div class="det-header">' +
+        '<div class="det-type">' + (EMOJI[v.class]||'🚗') + ' ' + v.class.toUpperCase() + ' <span class="det-badge">#' + v.id + '</span></div>' +
+        '<span class="det-badge ' + badge + '">' + lbl + '</span>' +
+      '</div>' +
+      '<div class="det-row">' +
+        '<span>Speed</span><strong>' + spd + ' km/h</strong>' +
+        '<span>Distance</span><strong>' + dist + ' m</strong>' +
+        '<span>Confidence</span><strong>' + Math.round(v.score*100) + '%</strong>' +
+        '<span>Track</span><strong>#' + v.id + '</strong>' +
+      '</div></div>';
+  }).join('');
+}
+
+function vibrate(p) {
+  if ('vibrate' in navigator) navigator.vibrate(p);
+}
+
+// ── TTS ───────────────────────────────────────────────────────────
+// speakNow: cancels any current speech, speaks immediately
+function speakNow(text) {
+  if (!isActive) return;
+  if (!('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  ttsPlaying = false;
+  var utt    = new SpeechSynthesisUtterance(text);
+  utt.rate   = 1.05;
+  utt.pitch  = 1.0;
+  utt.volume = 1.0;
+  utt.onend  = function() { ttsPlaying = false; };
+  ttsPlaying = true;
+  window.speechSynthesis.speak(utt);
+}
+
+function speakStopped() {
+  // Called only from stopSystem — bypasses isActive guard
+  if (!('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  var utt    = new SpeechSynthesisUtterance('Assistant stopped.');
+  utt.rate   = 1.0;
+  window.speechSynthesis.speak(utt);
+}
+
+// ── TRACKING ──────────────────────────────────────────────────────
+function track(preds) {
+  var now     = Date.now();
+  var matched = new Set();
+
+  preds.forEach(function(p) {
+    var bx = p.bbox[0], by = p.bbox[1], bw = p.bbox[2], bh = p.bbox[3];
+    var cx = bx + bw / 2, cy = by + bh / 2;
+    var bestId = null, bestDist = 130;
+
+    trackedVehs.forEach(function(t, id) {
+      if (matched.has(id)) return;
+      var d = Math.hypot(cx - t.cx, cy - t.cy);
+      if (d < bestDist) { bestDist = d; bestId = id; }
+    });
+
+    if (bestId !== null) {
+      var t    = trackedVehs.get(bestId);
+      var dt   = (now - t.ts) / 1000 || 0.033;
+      var px   = Math.hypot(cx - t.cx, cy - t.cy);
+      var spd  = Math.min((px / 10 / dt) * 3.6, 160);
+      t.speed  = t.speed * 0.65 + spd * 0.35;
+      t.cx = cx; t.cy = cy; t.bbox = p.bbox;
+      t.score = p.score; t.ts = now; t.class = p.class; t.age++;
+      matched.add(bestId);
+    } else {
+      vehicleId++;
+      trackedVehs.set(vehicleId, {
+        id: vehicleId, cx: cx, cy: cy, bbox: p.bbox,
+        class: p.class, score: p.score, speed: 0, ts: now, age: 0
+      });
+      matched.add(vehicleId);
+    }
+  });
+
+  // Remove stale (not seen for 1.5s)
+  trackedVehs.forEach(function(t, id) {
+    if (!matched.has(id) && (now - t.ts) > 1500) trackedVehs.delete(id);
+  });
+}
+
+// ── DRAW ──────────────────────────────────────────────────────────
+function draw() {
+  var canvas = document.getElementById('overlay');
+  var video  = document.getElementById('video');
+  canvas.width  = video.videoWidth;
+  canvas.height = video.videoHeight;
+  var ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  trackedVehs.forEach(function(t) {
+    var bx = t.bbox[0], by = t.bbox[1], bw = t.bbox[2], bh = t.bbox[3];
+    var spd   = Math.round(t.speed);
+    var dist  = estDist(t.class, bw);
+    var color = spd > 60 ? '#f85149' : spd > 30 ? '#d29922' : '#3fb950';
+
+    // Bounding box
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 2.5;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, 4);
+    ctx.stroke();
+
+    // Corner accents
+    var cs = 14;
+    ctx.lineWidth = 3;
+    [[bx,by,1,1],[bx+bw,by,-1,1],[bx,by+bh,1,-1],[bx+bw,by+bh,-1,-1]].forEach(function(c) {
+      ctx.beginPath();
+      ctx.moveTo(c[0] + cs*c[2], c[1]);
+      ctx.lineTo(c[0], c[1]);
+      ctx.lineTo(c[0], c[1] + cs*c[3]);
+      ctx.stroke();
+    });
+
+    // Label
+    var label = t.class.toUpperCase() + ' #' + t.id + '  ' + spd + 'km/h  ' + dist + 'm';
+    ctx.font = 'bold 12px IBM Plex Mono, monospace';
+    var tw = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(8,12,16,0.88)';
+    ctx.fillRect(bx, by - 28, tw + 14, 24);
+    ctx.fillStyle = color;
+    ctx.fillText(label, bx + 7, by - 11);
+
+    // Confidence bar
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fillRect(bx, by + bh, bw, 4);
+    ctx.fillStyle = color;
+    ctx.fillRect(bx, by + bh, bw * t.score, 4);
+  });
+}
+
+// ── DECISION ENGINE ───────────────────────────────────────────────
+//
+//  VEHICLE present  →  say "Caution" once, repeat every 4s
+//  Vehicle leaves   →  SILENT countdown starts (5s)
+//  5s clear         →  say "Safe to cross", repeat every 8s
+//  Vehicle appears  →  if was SAFE: "Stop! Vehicle detected" (urgent)
+//                       else: "Caution. Vehicle on road."
+//  Fast/close veh   →  "Danger" immediately, repeat every 2s
+//  STOP pressed     →  everything silenced instantly
+//
+function assess() {
+  if (!isActive) return;
+
+  var vehs    = Array.from(trackedVehs.values());
+  var now     = Date.now();
+  var count   = vehs.length;
+  var closest = count ? Math.min.apply(null, vehs.map(function(v){ return estDist(v.class, v.bbox[2]); })) : null;
+  var maxSpd  = count ? Math.max.apply(null, vehs.map(function(v){ return v.speed; })) : 0;
+
+  renderCards(vehs);
+  updateStats(count, closest, maxSpd);
+
+  if (count > 0) {
+    // ── VEHICLES ON ROAD ──────────────────────────────────────────
+    clearedAt = null; // reset clear timer immediately
+
+    var isDanger = maxSpd > 70 || closest < 8;
+
+    if (isDanger) {
+      if (appState !== STATE.DANGER) {
+        appState = STATE.DANGER;
+        lastSpeakT = now;
+        setBanner('danger','🚨','DANGER — DO NOT CROSS', 'Fast vehicle! ' + Math.round(maxSpd) + 'km/h, ' + closest + 'm away');
+        speakNow('Danger! Do not cross.');
+        log('DANGER: ' + Math.round(maxSpd) + ' km/h at ' + closest + 'm', 'error');
+        vibrate([300,100,300,100,300]);
+      } else if (now - lastSpeakT >= RPT_DANGER_MS) {
+        lastSpeakT = now;
+        speakNow('Danger. Do not cross.');
+        vibrate([200,100,200]);
+      } else {
+        setBanner('danger','🚨','DANGER — DO NOT CROSS', 'Fast vehicle! ' + Math.round(maxSpd) + 'km/h, ' + closest + 'm away');
+      }
+
+    } else {
+      // Normal vehicle presence
+      if (appState === STATE.SAFE) {
+        // Was safe — vehicle suddenly appeared — urgent warning
+        appState   = STATE.VEHICLE;
+        lastSpeakT = now;
+        setBanner('danger','🚨','STOP — VEHICLE APPEARED', 'Vehicle detected after clear road');
+        speakNow('Stop! Vehicle on road. Do not cross.');
+        log('Vehicle appeared after clear road — STOP', 'error');
+        vibrate([300,150,300]);
+
+      } else if (appState !== STATE.VEHICLE) {
+        // Entered vehicle state from idle/clearing/danger
+        appState   = STATE.VEHICLE;
+        lastSpeakT = now;
+        setBanner('warn','⚠','CAUTION — WAIT', count + ' vehicle' + (count>1?'s':'') + ' on road');
+        speakNow('Caution. Vehicle on road. Please wait.');
+        log('Vehicle detected — waiting', 'warning');
+        vibrate([200,100,200]);
+
+      } else {
+        // Still in vehicle state — update banner, repeat voice every 4s
+        setBanner('warn','⚠','CAUTION — WAIT', count + ' vehicle' + (count>1?'s':'') + ' on road');
+        if (now - lastSpeakT >= RPT_CAUTION_MS) {
+          lastSpeakT = now;
+          speakNow('Still waiting. Vehicle on road.');
+          vibrate([100,80,100]);
+        }
+      }
+    }
+
+  } else {
+    // ── ROAD CLEAR ────────────────────────────────────────────────
+    if (clearedAt === null) clearedAt = now;
+
+    var clearedMs  = now - clearedAt;
+    var secsLeft   = Math.max(0, Math.ceil((SAFE_CLEAR_MS - clearedMs) / 1000));
+
+    if (clearedMs < SAFE_CLEAR_MS) {
+      // Silent countdown — visual only, no voice
+      appState = STATE.CLEARING;
+      setBanner('warn','⏳', 'CHECKING… ' + secsLeft + 's remaining', 'Verifying road is clear');
+
+    } else if (appState !== STATE.SAFE) {
+      // Just crossed 5s threshold — announce safe
+      appState   = STATE.SAFE;
+      lastSpeakT = now;
+      setBanner('safe','✓','SAFE TO CROSS','Road clear for 5 seconds');
+      speakNow('Road is clear. Safe to cross.');
+      log('✓ Road clear 5s — safe to cross', 'success');
+      vibrate([100,50,100,50,100]);
+
+    } else {
+      // Staying safe — keep banner, repeat every 8s
+      setBanner('safe','✓','SAFE TO CROSS','Road is clear');
+      if (now - lastSpeakT >= RPT_SAFE_MS) {
+        lastSpeakT = now;
+        speakNow('Still clear. Safe to cross.');
+      }
+    }
+  }
+}
+
+// ── DETECTION LOOP ────────────────────────────────────────────────
+async function loop(ts) {
+  if (!isActive) return;
+  animFrame = requestAnimationFrame(loop);
+
+  if (prevFrameT) fps = Math.round(1000 / (ts - prevFrameT));
+  prevFrameT = ts;
+  document.getElementById('statFps').textContent = fps || '—';
+
+  if (ts - lastDetectT < DETECT_MS) return;
+  lastDetectT = ts;
+
+  var video = document.getElementById('video');
+  if (model && video.videoWidth > 0) {
+    try {
+      var preds    = await model.detect(video, 20, 0.42);
+      var vehicles = preds.filter(function(p){ return VEHICLE_CLASSES.indexOf(p.class) !== -1; });
+      track(vehicles);
+      draw();
+      assess();
+    } catch(e) {
+      console.warn('Detection error:', e);
+    }
+  } else {
+    runSim();
+  }
+}
+
+// ── SIMULATION (no camera) ────────────────────────────────────────
+function runSim() {
+  var n = Math.floor(Math.random() * 3);
+  trackedVehs.clear();
+  for (var i = 0; i < n; i++) {
+    var cls = VEHICLE_CLASSES[Math.floor(Math.random() * 5)];
+    var bw  = 80 + Math.random() * 130;
+    trackedVehs.set(i + 1, {
+      id: i+1, class: cls,
+      bbox: [60 + i*160, 100, bw, bw*0.65],
+      speed: 15 + Math.random() * 80,
+      score: 0.70 + Math.random() * 0.28,
+      cx: 60 + i*160 + bw/2, cy: 132, age: 1, ts: Date.now()
+    });
+  }
+  assess();
+}
+
+// ── START ─────────────────────────────────────────────────────────
+async function startSystem() {
+  if (isActive) return;
+  isActive = true;
+
+  // Reset state
+  appState   = STATE.IDLE;
+  clearedAt  = null;
+  lastSpeakT = 0;
+  trackedVehs.clear();
+
+  hideEl('startBtn');
+  showEl('stopBtn');
+  showEl('checkinBtn');
+  hideEl('videoPlaceholder');
+  document.getElementById('scanLine').style.display = 'block';
+  setDot(true);
+  setBanner('warn','⏳','STARTING…','Loading camera and model');
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode:'environment', width:{ideal:1280}, height:{ideal:720} },
+      audio: false
+    });
+    var video = document.getElementById('video');
+    video.srcObject = stream;
+    await video.play();
+    log('Camera active — real-time detection running', 'success');
+    speakNow('Road crossing assistant activated.');
+  } catch(e) {
+    log('Camera unavailable — running in simulation mode', 'warning');
+    speakNow('Assistant running in simulation mode.');
+  }
+
+  setBanner('idle','⏸','MONITORING','Watching for vehicles…');
+  requestAnimationFrame(loop);
+}
+
+// ── STOP ──────────────────────────────────────────────────────────
+function stopSystem() {
+  isActive = false;
+
+  // Kill speech first
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  ttsPlaying = false;
+
+  // Reset all state
+  appState   = STATE.IDLE;
+  clearedAt  = null;
+  lastSpeakT = 0;
+
+  if (stream) { stream.getTracks().forEach(function(t){ t.stop(); }); stream = null; }
+  if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
+
+  showEl('startBtn');
+  hideEl('stopBtn');
+  hideEl('checkinBtn');
+  showEl('videoPlaceholder');
+  document.getElementById('scanLine').style.display = 'none';
+
+  var canvas = document.getElementById('overlay');
+  canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+
+  trackedVehs.clear();
+  updateStats(0, null, 0);
+  renderCards([]);
+  setBanner('idle','⏸','SYSTEM IDLE','Assistant stopped');
+  setDot(false);
+  log('System stopped', 'info');
+
+  // Slight delay so cancel() flushes before we speak
+  setTimeout(function() {
+    if (!isActive) speakStopped();
+  }, 350);
+}
+
+// ── CHECK IN ──────────────────────────────────────────────────────
+function doCheckin() {
+  log('User check-in confirmed ✓', 'success');
+  speakNow('Check-in received. Continuing to monitor.');
+  vibrate([100,50,100]);
+}
+
+// ── EMERGENCY ALERT ───────────────────────────────────────────────
+async function sendEmergencyAlert() {
+  var phone    = document.getElementById('emergencyPhone').value.trim();
+  var email    = document.getElementById('emergencyEmail').value.trim();
+  var name     = document.getElementById('emergencyName').value.trim() || 'SmartCross User';
+  var statusEl = document.getElementById('emergencyStatus');
+
+  if (!phone && !email) {
+    statusEl.className   = 'emergency-status error';
+    statusEl.textContent = '⚠ Enter a phone number or email first.';
+    return;
+  }
+
+  statusEl.className   = 'emergency-status sent';
+  statusEl.textContent = '⏳ Getting location…';
+
+  var loc = await getLocation();
+  var ts  = new Date().toLocaleString();
+  var msg = '🚨 EMERGENCY ALERT — SmartCross AI\n\nUser: ' + name + '\nTime: ' + ts + '\nLocation: ' + loc + '\n\nThis person may need assistance crossing the road. Please check on them immediately.';
+
+  var sent = false;
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: '🚨 Emergency Alert', text: msg });
+      sent = true;
+    } catch(e) {}
+  }
+
+  if (!sent && email) {
+    window.open('mailto:' + email + '?subject=' + encodeURIComponent('🚨 SmartCross Emergency Alert') + '&body=' + encodeURIComponent(msg), '_blank');
+    sent = true;
+  }
+  if (phone) {
+    var clean = phone.replace(/\s/g,'');
+    window.open('https://wa.me/' + clean.replace('+','') + '?text=' + encodeURIComponent(msg), '_blank');
+    setTimeout(function(){ window.open('sms:' + clean + '?body=' + encodeURIComponent(msg), '_blank'); }, 600);
+    sent = true;
+  }
+
+  log('🚨 Emergency alert sent to ' + (email || phone), 'error');
+  speakNow('Emergency alert sent.');
+  vibrate([300,100,300,100,300]);
+  statusEl.className   = 'emergency-status sent';
+  statusEl.textContent = '✓ Alert sent at ' + nowTime() + ' — check WhatsApp / email';
+}
+
+async function getLocation() {
+  return new Promise(function(resolve) {
+    if (!navigator.geolocation) { resolve('Location unavailable'); return; }
+    navigator.geolocation.getCurrentPosition(
+      function(p) {
+        resolve(p.coords.latitude.toFixed(5) + ', ' + p.coords.longitude.toFixed(5) +
+          ' — https://maps.google.com/?q=' + p.coords.latitude + ',' + p.coords.longitude);
+      },
+      function() { resolve('Location permission denied'); },
+      { timeout: 5000 }
+    );
+  });
+}
+
+// ── INIT ──────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', function() {
+  document.getElementById('initTime').textContent = nowTime();
+  setBanner('idle','⏸','SYSTEM IDLE','Start the assistant to begin monitoring');
+  // Load model in background
+  if (typeof tf !== 'undefined' && typeof cocoSsd !== 'undefined') {
+    tf.ready().then(function() {
+      return cocoSsd.load({ base: 'mobilenet_v2' });
+    }).then(function(m) {
+      model = m;
+      log('Detection model loaded (COCO-SSD)', 'success');
+    }).catch(function(e) {
+      log('Model unavailable — simulation mode will be used', 'warning');
+    });
+  } else {
+    log('TF not loaded yet — will retry on start', 'warning');
+  }
+});
+</script>
+</body>
+</html>
